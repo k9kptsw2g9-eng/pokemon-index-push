@@ -7,9 +7,6 @@ on:
   # 允许手动触发，方便测试
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   push:
     runs-on: ubuntu-latest
@@ -28,6 +25,4 @@ jobs:
       - name: Run daily push
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python daily_push.py
