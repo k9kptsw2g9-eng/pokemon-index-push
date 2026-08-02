@@ -1,24 +1,16 @@
-import base64
 import os
 import statistics
-import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
-import matplotlib
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import requests
 
-matplotlib.use("Agg")
-
-# 从环境变量读取 Token，避免直接写在代码里
+# 从环境变量读取 PushPlus Token，避免直接写在代码里
 PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "k9kptsw2g9-eng/pokemon-index-push")
 
 INDEX_API = "https://api.pokeca-chart.com/php/get-index-chart-data.php?mode=cache&cache_name=index_2"
 PUSH_API = "http://www.pushplus.plus/send"
+QUICKCHART_API = "https://quickchart.io/chart/create"
 
 
 def fetch_index_data():
@@ -118,96 +110,120 @@ def compute_metrics(data):
     }
 
 
-def generate_chart(data, metrics, filename):
-    """生成指数走势图并保存为指定文件"""
-    # 只取最近 120 个交易日画图
-    chart_data = data[-120:]
-    dates = [datetime.strptime(d["date"], "%Y-%m-%d") for d in chart_data]
+def generate_chart_url(data):
+    """通过 QuickChart 生成走势图，返回图片外链"""
+    chart_data = data[-60:]
+    labels = [d["date"][5:] for d in chart_data]  # mm-dd
     prices = [d["price"] for d in chart_data]
     volumes = [d["volume"] for d in chart_data]
 
-    # 计算对应日期的 SMA20、布林上下轨
     sma_line = []
     upper_line = []
     lower_line = []
     for i in range(len(chart_data)):
-        start_idx = i - 19
-        if start_idx < 0:
-            window_prices = [d["price"] for d in chart_data[: i + 1]]
-        else:
-            window_prices = [d["price"] for d in chart_data[start_idx : i + 1]]
+        start_idx = max(0, i - 19)
+        window_prices = [d["price"] for d in chart_data[start_idx : i + 1]]
         sma = sum(window_prices) / len(window_prices)
         std = statistics.stdev(window_prices) if len(window_prices) > 1 else 0
-        sma_line.append(sma)
-        upper_line.append(sma + 2 * std)
-        lower_line.append(sma - 2 * std)
+        sma_line.append(round(sma, 1))
+        upper_line.append(round(sma + 2 * std, 1))
+        lower_line.append(round(sma - 2 * std, 1))
 
-    plt.style.use("dark_background")
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(10, 6), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
+    # 成交量颜色：涨绿跌红
+    vol_colors = []
+    for i in range(len(prices)):
+        if i == 0 or prices[i] >= prices[i - 1]:
+            vol_colors.append("rgba(63,185,80,0.6)")
+        else:
+            vol_colors.append("rgba(248,81,73,0.6)")
+
+    config = {
+        "type": "line",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": "Price",
+                    "data": prices,
+                    "borderColor": "#58a6ff",
+                    "backgroundColor": "#58a6ff",
+                    "fill": False,
+                    "pointRadius": 0,
+                    "yAxisID": "y",
+                },
+                {
+                    "label": "SMA20",
+                    "data": sma_line,
+                    "borderColor": "#d2a8ff",
+                    "backgroundColor": "#d2a8ff",
+                    "fill": False,
+                    "pointRadius": 0,
+                    "yAxisID": "y",
+                },
+                {
+                    "label": "BB Upper",
+                    "data": upper_line,
+                    "borderColor": "#3fb950",
+                    "backgroundColor": "#3fb950",
+                    "fill": False,
+                    "pointRadius": 0,
+                    "borderDash": [5, 5],
+                    "yAxisID": "y",
+                },
+                {
+                    "label": "BB Lower",
+                    "data": lower_line,
+                    "borderColor": "#3fb950",
+                    "backgroundColor": "#3fb950",
+                    "fill": False,
+                    "pointRadius": 0,
+                    "borderDash": [5, 5],
+                    "yAxisID": "y",
+                },
+                {
+                    "label": "Volume",
+                    "data": volumes,
+                    "type": "bar",
+                    "backgroundColor": vol_colors,
+                    "yAxisID": "y-volume",
+                },
+            ],
+        },
+        "options": {
+            "title": {
+                "display": True,
+                "text": f"PSA10 Index Chart ({chart_data[0]['date']} ~ {chart_data[-1]['date']})",
+                "fontColor": "#c9d1d9",
+            },
+            "legend": {"labels": {"fontColor": "#c9d1d9"}},
+            "scales": {
+                "xAxes": [{"ticks": {"fontColor": "#c9d1d9"}, "gridLines": {"color": "#30363d"}}],
+                "yAxes": [
+                    {
+                        "id": "y",
+                        "position": "left",
+                        "ticks": {"fontColor": "#c9d1d9"},
+                        "gridLines": {"color": "#30363d"},
+                    },
+                    {
+                        "id": "y-volume",
+                        "position": "right",
+                        "ticks": {"fontColor": "#c9d1d9"},
+                        "gridLines": {"drawOnChartArea": False},
+                    },
+                ],
+            },
+        },
+    }
+
+    resp = requests.post(
+        QUICKCHART_API,
+        json={"chart": config, "width": 800, "height": 450, "backgroundColor": "#0d1117"},
+        timeout=30,
     )
-    fig.patch.set_facecolor("#0d1117")
-    ax1.set_facecolor("#0d1117")
-    ax2.set_facecolor("#0d1117")
-
-    # 价格与均线
-    ax1.plot(dates, prices, color="#58a6ff", linewidth=1.5, label="Price")
-    ax1.plot(dates, sma_line, color="#d2a8ff", linewidth=1.2, label="SMA20")
-    ax1.fill_between(
-        dates, upper_line, lower_line, color="#238636", alpha=0.15, label="Bollinger Band"
-    )
-    ax1.plot(dates, upper_line, color="#3fb950", linewidth=0.8, linestyle="--")
-    ax1.plot(dates, lower_line, color="#3fb950", linewidth=0.8, linestyle="--")
-
-    # 标注最新价
-    ax1.annotate(
-        f"{metrics['price']:,}",
-        xy=(dates[-1], prices[-1]),
-        xytext=(10, 0),
-        textcoords="offset points",
-        color="white",
-        fontsize=9,
-    )
-
-    ax1.set_title(f"PSA10 Index Chart ({chart_data[0]['date']} ~ {chart_data[-1]['date']})")
-    ax1.legend(loc="upper left", fontsize=8)
-    ax1.grid(True, alpha=0.2)
-
-    # 成交量
-    colors = ["#3fb950" if prices[i] >= prices[i - 1] else "#f85149" for i in range(len(prices))]
-    colors[0] = "#3fb950"
-    ax2.bar(dates, volumes, color=colors, alpha=0.6, width=0.8)
-    ax2.set_ylabel("Volume")
-    ax2.grid(True, alpha=0.2)
-
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=150, facecolor="#0d1117")
-    plt.close()
-    print(f"图表已保存：{filename}")
-
-
-def commit_chart_to_repo(filename):
-    """在 GitHub Actions 中把生成的图表提交回仓库，以便推送中使用图片外链"""
-    if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
-        print("未检测到 GITHUB_TOKEN，跳过图片提交")
-        return
-
-    try:
-        remote = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{GITHUB_REPOSITORY}.git"
-        subprocess.run(["git", "config", "user.email", "action@github.com"], check=True)
-        subprocess.run(["git", "config", "user.name", "GitHub Action"], check=True)
-        subprocess.run(["git", "remote", "set-url", "origin", remote], check=True)
-        subprocess.run(["git", "add", filename], check=True)
-        subprocess.run(
-            ["git", "commit", "-m", f"Update chart {datetime.now().strftime('%Y-%m-%d %H:%M')}"],
-            check=False,
-        )
-        subprocess.run(["git", "push"], check=True)
-        print("图表已提交到仓库")
-    except subprocess.CalledProcessError as e:
-        print(f"图表提交失败：{e}")
+    resp.raise_for_status()
+    result = resp.json()
+    return result["url"]
 
 
 def build_report(m):
@@ -254,7 +270,10 @@ def build_report(m):
         judgment.append(f"RSI 为 {m['rsi']:.1f}，处于中性区域。")
 
     if m["volume"] > m["avg_vol"] * 1.2:
-        judgment.append(f"当日成交量 {m['volume']} 件，高于 20 日均量 {m['avg_vol']:.0f} 件，放量上涨/下跌确认信号。")
+        judgment.append(
+            f"当日成交量 {m['volume']} 件，高于 20 日均量 {m['avg_vol']:.0f} 件，"
+            "放量上涨/下跌确认信号。"
+        )
     elif m["volume"] < m["avg_vol"] * 0.8:
         judgment.append(
             f"当日成交量 {m['volume']} 件，低于 20 日均量 {m['avg_vol']:.0f} 件，"
@@ -326,16 +345,8 @@ def main():
 
     data = fetch_index_data()
     metrics = compute_metrics(data)
-
-    # 每天生成一个带日期的图表文件，避免 CDN 缓存导致显示旧图
-    chart_filename = f"chart_{metrics['date']}.png"
-    generate_chart(data, metrics, chart_filename)
-
-    # 先提交图片，确保 PushPlus 发送时图片外链可用
-    commit_chart_to_repo(chart_filename)
-
+    image_url = generate_chart_url(data)
     report = build_report(metrics)
-    image_url = f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/main/{chart_filename}"
     push_to_wechat("宝可梦指数日报", report, image_url)
 
 
