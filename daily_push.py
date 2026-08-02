@@ -19,7 +19,6 @@ GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "k9kptsw2g9-eng/pokemon-
 
 INDEX_API = "https://api.pokeca-chart.com/php/get-index-chart-data.php?mode=cache&cache_name=index_2"
 PUSH_API = "http://www.pushplus.plus/send"
-CHART_FILE = "chart.png"
 
 
 def fetch_index_data():
@@ -119,8 +118,8 @@ def compute_metrics(data):
     }
 
 
-def generate_chart(data, metrics):
-    """生成指数走势图并保存为 chart.png"""
+def generate_chart(data, metrics, filename):
+    """生成指数走势图并保存为指定文件"""
     # 只取最近 120 个交易日画图
     chart_data = data[-120:]
     dates = [datetime.strptime(d["date"], "%Y-%m-%d") for d in chart_data]
@@ -184,13 +183,13 @@ def generate_chart(data, metrics):
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.savefig(CHART_FILE, dpi=150, facecolor="#0d1117")
+    plt.savefig(filename, dpi=150, facecolor="#0d1117")
     plt.close()
-    print(f"图表已保存：{CHART_FILE}")
+    print(f"图表已保存：{filename}")
 
 
-def commit_chart_to_repo():
-    """在 GitHub Actions 中把 chart.png 提交回仓库，以便推送中使用图片外链"""
+def commit_chart_to_repo(filename):
+    """在 GitHub Actions 中把生成的图表提交回仓库，以便推送中使用图片外链"""
     if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
         print("未检测到 GITHUB_TOKEN，跳过图片提交")
         return
@@ -200,7 +199,7 @@ def commit_chart_to_repo():
         subprocess.run(["git", "config", "user.email", "action@github.com"], check=True)
         subprocess.run(["git", "config", "user.name", "GitHub Action"], check=True)
         subprocess.run(["git", "remote", "set-url", "origin", remote], check=True)
-        subprocess.run(["git", "add", CHART_FILE], check=True)
+        subprocess.run(["git", "add", filename], check=True)
         subprocess.run(
             ["git", "commit", "-m", f"Update chart {datetime.now().strftime('%Y-%m-%d %H:%M')}"],
             check=False,
@@ -327,14 +326,16 @@ def main():
 
     data = fetch_index_data()
     metrics = compute_metrics(data)
-    generate_chart(data, metrics)
+
+    # 每天生成一个带日期的图表文件，避免 CDN 缓存导致显示旧图
+    chart_filename = f"chart_{metrics['date']}.png"
+    generate_chart(data, metrics, chart_filename)
 
     # 先提交图片，确保 PushPlus 发送时图片外链可用
-    commit_chart_to_repo()
+    commit_chart_to_repo(chart_filename)
 
     report = build_report(metrics)
-    ts = datetime.now().strftime("%Y%m%d%H%M%S")
-    image_url = f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/main/{CHART_FILE}?v={ts}"
+    image_url = f"https://raw.githubusercontent.com/{GITHUB_REPOSITORY}/main/{chart_filename}"
     push_to_wechat("宝可梦指数日报", report, image_url)
 
 
